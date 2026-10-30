@@ -1,7 +1,7 @@
 """
 Applet: Chroma Clock
 Summary: Stylish animated clock
-Description: A clock with 23 looks, or a random one each time, from simple (outline, words, analog, dot grid, moon, world clocks) to animated (neon, morph, matrix, fire, pong, tetris, aquarium, snow, lava lamp, starfield, pac-man and more).
+Description: A clock with 26 looks, or a random one each time, from simple (outline, words, analog, dot grid, moon, world clocks) to animated (neon, morph, matrix, fire, pong, tetris, aquarium, snow, lava lamp, starfield, pac-man, glitch, fireflies, fireworks and more).
 Author: alejoar
 """
 
@@ -1754,6 +1754,285 @@ def frame_pacman(now, use_24h, frame, sub):
             draw_sprite(buf, GHOST, gx, 23, GHOST_COLORS[g])
     return buf
 
+# ---------- round 2 styles ----------
+
+def copy_buf(buf):
+    return [list(row) for row in buf]
+
+def add_px(buf, x, y, c):
+    # Additive light, so overlapping sparks and glows brighten instead of covering
+    if y >= 0 and y < len(buf) and x >= 0 and x < len(buf[0]):
+        o = buf[y][x]
+        buf[y][x] = (min(255, o[0] + c[0]), min(255, o[1] + c[1]), min(255, o[2] + c[2]))
+
+# --- Glitch ---
+
+def glitch_cells(hs, ms):
+    # Same layout as big_time_cells, but for any digit strings (so digits can be corrupted)
+    hcells, hw, gh = glyph_cells(hs, GLYPHS, 5, 9, 2, 2, 0)
+    mcells, mw, _ = glyph_cells(ms, GLYPHS, 5, 9, 2, 2, 0)
+    x0 = (W - (hw + 6 + mw)) // 2
+    y0 = (H - gh) // 2
+    return [(x + x0, y + y0) for (x, y) in hcells] + [(x + x0 + hw + 6, y + y0) for (x, y) in mcells], colon_cells(x0 + hw + 2, y0, 2, gh)
+
+def frame_glitch(now, use_24h, frame):
+    hs, ms, ampm = time_parts(now, use_24h)
+
+    # Mostly a clean signal with a faint color fringe. Every few seconds, and as
+    # the minute turns over, it tears for a moment.
+    since = now.second + now.nanosecond / 1e9
+    burst = noise(frame // 2, 5, 11) > 0.82 or since < 0.4
+    split = 1
+    bands = [0] * 12
+    if burst:
+        split = 2 + int(noise(frame, 6, 11) * 3)
+        for b in range(12):
+            if noise(b, frame, 12) > 0.55:
+                bands[b] = int(noise(b, frame, 13) * 13) - 6
+
+        # Now and then a digit decodes wrong for a frame
+        if noise(frame, 8, 11) > 0.5:
+            i = int(noise(frame, 9, 11) * 4)
+            text = list((hs + ms).elems())
+            if i < len(text):
+                text[i] = str(int(noise(frame, 10, 11) * 10))
+            hs = "".join(text[:len(hs)])
+            ms = "".join(text[len(hs):])
+    digits, colon = glitch_cells(hs, ms)
+    cells = digits + (colon if now.second % 2 == 0 else [])
+
+    buf = new_buf((0, 0, 0))
+
+    # A dim tracking band rolls slowly down the screen
+    roll = int(since * 6) % (H + 8) - 4
+    for y in range(roll, roll + 3):
+        for x in range(W):
+            put(buf, x, y, (10, 12, 16))
+    red = {}
+    cyan = {}
+    for (x, y) in cells:
+        s = bands[y // 3]
+        red[(x + s - split // 2 - split % 2, y)] = True
+        cyan[(x + s + split // 2, y)] = True
+    for k in red:
+        put(buf, k[0], k[1], (255, 255, 255) if k in cyan else (255, 40, 90))
+    for k in cyan:
+        if k not in red:
+            put(buf, k[0], k[1], (40, 230, 255))
+
+    if burst:
+        # Corrupt macroblocks and a line of static
+        for b in range(3):
+            if noise(b, frame, 15) > 0.5:
+                bx = int(noise(b, frame, 16) * (W - 6))
+                by = int(noise(b, frame, 17) * (H - 2))
+                c = [(255, 40, 90), (40, 230, 255), (230, 230, 240)][b]
+                for y in range(by, by + 2):
+                    for x in range(bx, bx + 2 + int(noise(b, frame, 18) * 6)):
+                        put(buf, x, y, scale_rgb(c, 0.7))
+        ny = int(noise(frame, 7, 11) * H)
+        for x in range(W):
+            if noise(x, frame, 14) > 0.55:
+                put(buf, x, ny, (90, 90, 100))
+    if ampm:
+        draw_small(buf, ampm, W - 8, 0, (150, 150, 160))
+    return buf
+
+# --- Fireflies ---
+
+FIREFLY_MAX = 100
+FIREFLY_AMBIENT = 10
+
+def firefly_targets(now, use_24h):
+    # One firefly per pixel of the 5x9 glyphs: the big digits as a dotted swarm
+    digits, colon, _, box = big_time_cells(now, use_24h)
+    x0, y0 = box[0], box[1]
+    pts = [(x, y) for (x, y) in digits + colon if (x - x0) % 2 == 0 and (y - y0) % 2 == 0]
+    return pts + [None] * (FIREFLY_MAX - len(pts))
+
+def fireflies_background(ampm):
+    bg = new_buf((0, 0, 0))
+    for y in range(H):
+        c = mix((1, 3, 12), (4, 12, 16), y / (H - 1.0))
+        for x in range(W):
+            bg[y][x] = c
+    for k in range(14):
+        put(bg, int(noise(k, 1, 31) * W), int(noise(k, 2, 31) * 9), (40, 46, 70))
+
+    # Meadow: a dark treeline far off, grass blades in front
+    for x in range(W):
+        tree = H - 4 - int(2 * (0.5 + 0.5 * math.sin(x * 0.45)) + noise(x // 3, 3, 31) * 3)
+        for y in range(tree, H):
+            bg[y][x] = (2, 8, 8)
+        blade = H - 1 - int(noise(x, 4, 31) * 3)
+        for y in range(blade, H):
+            bg[y][x] = (4, 16, 8)
+    if ampm:
+        draw_small(bg, ampm, W - 8, 0, (70, 90, 50))
+    return bg
+
+def firefly_home(k):
+    # Where each firefly rests in the grass before it rises
+    return (2 + noise(k, 6, 13) * 60, 28 + noise(k, 7, 13) * 3)
+
+def fireflies_frames(now, use_24h, count, step):
+    _, _, ampm = time_parts(now, use_24h)
+    bg = fireflies_background(ampm)
+    prev = [firefly_home(k) for k in range(FIREFLY_MAX)]
+    cur = firefly_targets(now, use_24h)
+    label = time_label(now, use_24h)
+    t0 = 0.0
+    bufs = []
+    for f in range(count):
+        t = f * step / 1000.0
+        fnow = now + time.parse_duration("%dms" % (f * step))
+        lab = time_label(fnow, use_24h)
+        if lab != label:
+            # New minute: fly from the old digits to the new ones; spares settle back in the grass
+            prev = [cur[k] if cur[k] else firefly_home(k) for k in range(FIREFLY_MAX)]
+            cur = firefly_targets(fnow, use_24h)
+            label = lab
+            t0 = t
+        buf = copy_buf(bg)
+        for k in range(FIREFLY_MAX):
+            a = prev[k]
+            b = cur[k] if cur[k] else firefly_home(k)
+            if not cur[k] and a == b:
+                continue
+
+            # Each one rises along its own curve, staggered, then holds still and glows
+            e = ease((t - t0 - noise(k, 3, 13) * 1.0) / 1.3)
+            x = a[0] + (b[0] - a[0]) * e + math.sin(e * math.pi) * (noise(k, 8, 13) * 12 - 6)
+            y = a[1] + (b[1] - a[1]) * e
+            glow = 0.7 + 0.3 * math.sin(t * 2.2 + k * 1.7)
+            if e < 1.0:
+                glow = 0.45 + 0.55 * e
+            x = iround(x)
+            y = iround(y)
+            halo = scale_rgb((30, 55, 10), glow)
+            for (dx, dy) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                add_px(buf, x + dx, y + dy, halo)
+            put(buf, x, y, mix((70, 100, 25), (240, 255, 140), glow))
+
+        # A few strays wander and blink on their own
+        for k in range(FIREFLY_AMBIENT):
+            blink = math.sin(t * (0.9 + noise(k, 9, 13)) + k * 2.3)
+            if blink < 0.2:
+                continue
+            glow = (blink - 0.2) / 0.8
+            x = iround(32 + 30 * math.sin(t * (0.15 + 0.2 * noise(k, 4, 13)) + k * 1.3))
+            y = iround(14 + 12 * math.sin(t * (0.2 + 0.2 * noise(k, 5, 13)) + k * 2.1))
+            for (dx, dy) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                add_px(buf, x + dx, y + dy, scale_rgb((25, 45, 8), glow))
+            add_px(buf, x, y, scale_rgb((200, 230, 110), glow))
+        bufs.append(buf)
+    return bufs
+
+# --- Fireworks ---
+
+def fireworks_sky():
+    buf = new_buf((0, 0, 0))
+    for y in range(H):
+        c = mix((1, 1, 10), (14, 8, 32), y / (H - 1.0))
+        for x in range(W):
+            buf[y][x] = c
+
+    # City skyline with lit windows
+    for x in range(W):
+        top = H - 7 - int(noise(x // 5, 6, 17) * 7)
+        if x % 5 == 4:
+            top += 1
+        for y in range(top, H):
+            lit = x % 5 in (1, 3) and y % 2 == 0 and y > top and noise(x, y, 17) > 0.55
+            buf[y][x] = (170, 135, 60) if lit else (12, 10, 24)
+    return buf
+
+# Burst kinds: (particles, speed, drag, gravity, life, trail length)
+FIREWORK_KINDS = [
+    (36, 19.0, 1.6, 5.0, 1.6, 2),  # peony: a round burst
+    (28, 14.0, 1.1, 3.0, 1.3, 1),  # ring: one even ring
+    (30, 14.0, 1.8, 9.0, 2.2, 4),  # willow: golden trails that droop
+]
+
+def firework_color(kind, hue, p, seed):
+    if kind == 2:
+        return (255, 190, 80)
+    if noise(seed, 5, 17) > 0.6:
+        # Two-tone shell
+        hue = hue + (0.5 if p % 2 else 0.0)
+    return hsv(hue, 0.75, 1.0)
+
+def frame_fireworks(now, use_24h, t, sky):
+    buf = copy_buf(sky)
+    gap = 0.8
+    last = int(t / gap)
+    flash = (0, 0, 0)
+    shells = []
+    for k in range(last - 4, last + 1):
+        seed = k + 50
+        launch = k * gap + noise(seed, 1, 17) * 0.5
+        tau = t - launch
+        if tau < 0 or tau > 3.0:
+            continue
+        shells.append((seed, tau))
+        if tau >= 0.75 and tau < 0.9:
+            # The sky lights up for a moment when a shell bursts
+            c = firework_color(int(noise(seed, 0, 17) * 3), noise(seed, 4, 17), 0, seed)
+            flash = scale_rgb(c, 0.1 * (1 - (tau - 0.75) / 0.15))
+    if flash != (0, 0, 0):
+        for y in range(H):
+            glow = scale_rgb(flash, 1 - y / float(H))
+            for x in range(W):
+                add_px(buf, x, y, glow)
+
+    for (seed, tau) in shells:
+        lx = 8 + noise(seed, 2, 17) * 48
+        peak = 6 + noise(seed, 3, 17) * 5
+        kind = int(noise(seed, 0, 17) * 3)
+        hue = noise(seed, 4, 17)
+        if tau < 0.75:
+            # Rocket climbing, slowing as it goes, shedding sparks
+            p = tau / 0.75
+            y = 31 - (31 - peak) * (1 - (1 - p) * (1 - p))
+            x = iround(lx + math.sin(p * 3) * 0.6)
+            for j in range(1, 4):
+                add_px(buf, x, iround(y) + j, scale_rgb((255, 170, 90), 0.5 / j))
+            add_px(buf, x, iround(y), (255, 235, 200))
+            continue
+        n, speed, drag, grav, life, trail = FIREWORK_KINDS[kind]
+        s = tau - 0.75
+        if s > life:
+            continue
+        fade = 1 - s / life
+        for p in range(n):
+            ang = p * 2 * math.pi / n + noise(seed, p, 19) * 0.2
+            v = speed if kind == 1 else speed * (0.6 + 0.4 * noise(seed, p, 18))
+            c = firework_color(kind, hue, p, seed)
+
+            # Fresh sparks burn white-hot, then take their color and fade; old ones twinkle
+            hot = clamp(1 - s / 0.2, 0.0, 1.0)
+            c = mix(c, (255, 255, 255), hot)
+            if fade < 0.35 and noise(p, int(t * 10), seed) > 0.5:
+                continue
+            for j in range(trail, -1, -1):
+                ss = max(0.0, s - j * 0.06)
+                d = v * (1 - math.exp(-ss * drag)) / drag
+                x = iround(lx + math.cos(ang) * d)
+                y = iround(peak + math.sin(ang) * d + grav * ss * ss / 2)
+                add_px(buf, x, y, scale_rgb(c, fade * (1.0 if j == 0 else 0.45 / j)))
+
+    # The time sits over the skyline so the sky is free for the show
+    tw = mid_time_width(now, use_24h)
+    tx = (W - tw) // 2
+    colon = now.second % 2 == 0
+    for (dx, dy) in ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)):
+        draw_mid_time(buf, now, use_24h, tx + dx, 22 + dy, (4, 3, 12), colon)
+    draw_mid_time(buf, now, use_24h, tx, 22, (245, 240, 255), colon)
+    _, _, ampm = time_parts(now, use_24h)
+    if ampm:
+        draw_small(buf, ampm, tx + tw + 3, 26, (150, 140, 170))
+    return buf
+
 # ---------- main ----------
 
 def main(config):
@@ -1818,6 +2097,21 @@ def main(config):
     elif style == "snow":
         step = 100
         frames = [buf_to_widget(b) for b in snow_frames(now, use_24h, seconds * 10, step)]
+        delay = step
+    elif style == "fireflies":
+        step = 100
+        frames = [buf_to_widget(b) for b in fireflies_frames(now, use_24h, seconds * 10, step)]
+        delay = step
+    elif style in ("glitch", "fireworks"):
+        step = 100
+        sky = fireworks_sky() if style == "fireworks" else None
+        for i in range(seconds * 10):
+            fnow = now + time.parse_duration("%dms" % (i * step))
+            if style == "glitch":
+                buf = frame_glitch(fnow, use_24h, i)
+            else:
+                buf = frame_fireworks(fnow, use_24h, i * step / 1000.0, sky)
+            frames.append(buf_to_widget(buf))
         delay = step
     elif style == "tetris":
         step = 100
@@ -1956,6 +2250,9 @@ STYLES = [
     ("Lava lamp", "lava"),
     ("Starfield", "starfield"),
     ("Pac-Man", "pacman"),
+    ("Glitch", "glitch"),
+    ("Fireflies", "fireflies"),
+    ("Fireworks", "fireworks"),
 ]
 
 def random_style_options(style):

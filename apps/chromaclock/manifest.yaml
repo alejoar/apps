@@ -2,7 +2,7 @@
 id: chromaclock
 name: Chroma Clock
 summary: Stylish animated clock
-desc: A clock with 23 looks, or a random one each time, from simple (outline, words, analog, dot grid, moon, world clocks) to animated (neon, morph, matrix, fire, pong, tetris, aquarium, snow, lava lamp, starfield, pac-man and more).
+desc: A clock with 26 looks, or a random one each time, from simple (outline, words, analog, dot grid, moon, world clocks) to animated (neon, morph, matrix, fire, pong, tetris, aquarium, snow, lava lamp, starfield, pac-man, glitch, fireflies, fireworks and more).
 author: alejoar
 fileName: chromaclock.star
 packageName: chromaclock
